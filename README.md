@@ -1,5 +1,15 @@
 # Redrob Intelligent Candidate Discovery & Ranking — Submission
 
+**Challenge:** The Data & AI Challenge (Redrob Intelligent Candidate Discovery & Ranking)
+
+**Team:** Genai
+
+| Name | GitHub |
+|---|---|
+| Sanika Deshmukh (Leader) | [@sanikad20](https://github.com/sanikad20) |
+| Divya Sreehari Addagatla | [@adivya15](https://github.com/adivya15) |
+| Pragati Kharat | [@pragatikharat17](https://github.com/pragatikharat17) |
+
 ## What this is
 
 This is our submission for the Redrob Intelligent Candidate Discovery & Ranking
@@ -62,6 +72,91 @@ Everything is regex/token-matched with word boundaries (not raw substring
 checks), specifically to avoid the kind of false positives that plague naive
 keyword matching — e.g. "RAG" as a skill shouldn't light up because someone's
 job description happened to contain the word "storage" or "average."
+
+## Architecture
+
+The whole thing is a single linear pipeline — no classes, no external services,
+nothing async. Everything happens in one O(n) pass over the candidate list, with
+a second tiny O(n) pass at the end to normalize scores. That's deliberate: at
+100k candidates and a 5-minute budget, the simplest thing that works is also
+the safest thing.
+
+```
+candidates.jsonl
+       │
+       ▼
+┌─────────────────────┐
+│   load_candidates()  │   stream-parse JSONL, one record at a time
+└─────────┬────────────┘
+          │  for each candidate record
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     detect_honeypot(candidate)               │
+│  impossible dates · overlapping jobs · 0-duration "expert"   │
+│  skills · junior→VP in <2y · stated YOE vs career timeline   │
+└───────────────────────┬───────────────────────────────────────┘
+                         │  honeypot → score = 0.0, skip rest
+                         ▼  otherwise, continue
+┌─────────────────────────────────────────────────────────────┐
+│                       score_candidate(candidate)              │
+│                                                                │
+│   title_score(title)              ─┐                          │
+│   career_score(history, profile)   │   each sub-score is       │
+│   skills_score(skills, scores)     │   independent and only    │
+│   experience_score(yoe)            │   reads its own slice     │
+│   location_score(loc, ...)         │   of the candidate record │
+│   notice_score(notice_days)        │   (no cross-talk, no      │
+│   education_score(education)      ─┘   shared mutable state)  │
+│                                                                │
+│   weighted sum of the seven scores above                      │
+│        × behavioral_score(signals)        (multiplier)        │
+│        × seniority_plausibility_factor()  (multiplier)        │
+│                                                                │
+│   → (raw_composite_score, components_dict)                    │
+└───────────────────────┬───────────────────────────────────────┘
+                         │  collect raw scores for every candidate
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   normalize_scores(raw_scores)                 │
+│   z-score → sigmoid, so the final 0–1 scores are spread       │
+│   sensibly across the whole pool instead of bunching near      │
+│   the top (which raw weighted sums tend to do)                 │
+└───────────────────────┬───────────────────────────────────────┘
+                         │  sort by normalized score, descending
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              generate_reasoning(candidate, components)         │
+│   builds the recruiter-readable explanation string per row:    │
+│   title + YOE → strongest relevant career evidence → top      │
+│   skills → location/notice/behavioral notes → concerns        │
+└───────────────────────┬───────────────────────────────────────┘
+                         ▼
+                  submission.csv
+         (candidate_id, rank, score, reasoning)
+```
+
+### Why it's structured this way
+
+- **Honeypot detection runs before scoring, not after.** A fabricated profile
+  shouldn't get to "compete" on its (fake) merits at all — it's cheaper and
+  safer to zero it out up front than to let it slip through on a high score
+  and then try to catch it later.
+- **Sub-scores are pure functions.** `title_score`, `career_score`,
+  `skills_score`, etc. each take plain values in and return a plain float out.
+  No shared state, no candidate-to-candidate dependency. That's what keeps the
+  whole thing O(n) — you could run these in parallel across candidates with no
+  changes if you ever needed to.
+- **Behavioral signals and seniority plausibility are multipliers, not
+  additive terms.** An unreachable candidate or an inflated title should scale
+  the *whole* score down proportionally, not just lose a few flat points that
+  matter less the higher the base score already is.
+- **Regex patterns are compiled once at module load** (`_compile_patterns`),
+  not per-candidate, so keyword/skill matching doesn't pay re-compilation cost
+  100,000 times over.
+- **Normalization is the only step that needs the full set of scores at once**
+  — everything before it can be computed independently per candidate, which is
+  why it's split out as its own pass at the end rather than folded into
+  `score_candidate`.
 
 ## Files
 
