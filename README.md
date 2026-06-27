@@ -167,8 +167,17 @@ candidates.jsonl
 
 ## Running it
 
+## Running it
+
+Install the required dependency:
+
 ```bash
-pip install openpyxl
+pip install -r requirements.txt
+```
+
+Then run the ranking pipeline:
+
+```bash
 python3 rank.py
 ```
 
