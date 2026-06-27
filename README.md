@@ -168,6 +168,7 @@ candidates.jsonl
 ## Running it
 
 ```bash
+pip install openpyxl
 python3 rank.py
 ```
 
